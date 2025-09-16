@@ -524,21 +524,25 @@ class ExtractWorker3(Process):
             self.tar2_current_file = None
         self.tar2_process = None
 
-    def _data_import_wrapper(self, close_fds, data_func, tar2_process):
+    @staticmethod
+    def _data_import_wrapper(log, close_fds, data_func, tar2_stdout,
+                             tar2_stderr):
         '''Close not needed file descriptors, handle output size reported
         by tar (if needed) then call data_func(tar2_process.stdout).
 
         This is to prevent holding write end of a pipe in subprocess,
         preventing EOF transfer.
         '''
-        for fd in close_fds:
-            if fd in (tar2_process.stdout.fileno(),
-                    tar2_process.stderr.fileno()):
-                continue
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+        if multiprocessing.get_start_method() == "fork":
+            # close FD only if it was inherited (the "fork" method)
+            for fd in close_fds:
+                if fd in (tar2_stdout.fileno(),
+                        tar2_stderr.fileno()):
+                    continue
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
         # retrieve file size from tar's stderr; warning: we do
         # not read data from tar's stdout at this point, it will
@@ -555,22 +559,22 @@ class ExtractWorker3(Process):
             # size (at this point nothing is retrieving data from tar stdout
             # yet, so it will hang on write() when the output pipe fill up).
             while True:
-                line = tar2_process.stderr.readline()
+                line = tar2_stderr.readline()
                 if not line:
-                    self.log.warning('EOF from tar before got file size info')
+                    log.warning('EOF from tar before got file size info')
                     break
                 line = line.decode()
                 if _tar_msg_re.match(line):
-                    self.log.debug('tar2_stderr: %s', line)
+                    log.debug('tar2_stderr: %s', line)
                 else:
                     match = _tar_file_size_re.match(line)
                     if match:
                         data_func_kwargs['file_size'] = int(match.groups()[0])
                         break
-                    self.log.warning(
+                    log.warning(
                         'unexpected tar output (no file size report): %s', line)
 
-        return data_func(tar2_process.stdout, **data_func_kwargs)
+        return data_func(tar2_stdout, **data_func_kwargs)
 
     def feed_tar2(self, filename, input_pipe):
         '''Feed data from *filename* to *input_pipe*
@@ -719,8 +723,9 @@ class ExtractWorker3(Process):
                     data_func = self.handlers[inner_name]
                     self.import_process = multiprocessing.Process(
                         target=self._data_import_wrapper,
-                        args=([input_pipe.fileno()],
-                        data_func, self.tar2_process))
+                        args=(self.log, [input_pipe.fileno()],
+                        data_func, self.tar2_process.stdout,
+                              self.tar2_process.stderr))
 
                     self.import_process.start()
                     self.tar2_process.stdout.close()
