@@ -488,12 +488,15 @@ def get_drive_assignment(app, drive_str):
 
 
 def start_expert(
-    domain, skip_if_running: bool = False, drive: str | None = None
+    domain,
+    skip_if_running: bool = False,
+    drive: str | None = None,
+    check_if_running: bool = True,
 ):
     """
-    Start the domain, optionally specifying a drive.
+    Start the domain, optionally specifying a drive and checking its state.
     """
-    if domain.is_running():
+    if check_if_running and domain.is_running():
         if skip_if_running:
             return
         raise QubesVMAlreadyStartedError("Domain is already running")

@@ -77,22 +77,60 @@ parser_drive.add_argument(
 async def run_async(args=None, app=None):
     # pylint: disable=missing-function-docstring
     args = parser.parse_args(args, app=app)
+    exit_code = 0
+    preflight = len(args.domains) > 1 and not args.skip_if_running
+    if preflight:
+        check_tasks = [
+            asyncio.to_thread(qube.is_running) for qube in args.domains
+        ]
+        check_results = await asyncio.gather(
+            *check_tasks, return_exceptions=True
+        )
+        start_domains = []
+        for qube, is_running in zip(args.domains, check_results):
+            if isinstance(is_running, BaseException):
+                exit_code = 1
+                parser.print_error(
+                    "Starting qube failed: {}: {}".format(
+                        qube.name, str(is_running)
+                    )
+                )
+            elif is_running:
+                exit_code = 1
+                parser.print_error(
+                    "Starting qube failed: {}: Domain is already running"
+                    .format(qube.name)
+                )
+            else:
+                start_domains.append(qube)
+    else:
+        start_domains = args.domains
+
+    # The preflight above determines which qubes were running before this
+    # command. Without a drive, admin.vm.Start is a no-op if a dependency has
+    # started the qube in the meantime, so do not repeat the state request.
+    check_if_running = not (preflight or args.skip_if_running)
+    if args.drive:
+        # Avoid attaching a temporary drive to an already-running qube.
+        check_if_running = True
     tasks = [
         asyncio.to_thread(
             qubesadmin.utils.start_expert,
             domain=qube,
-            skip_if_running=args.skip_if_running,
+            skip_if_running=args.skip_if_running or preflight,
             drive=args.drive,
+            check_if_running=check_if_running,
         )
-        for qube in args.domains
+        for qube in start_domains
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    exit_code = 0
-    for qube, res in zip(args.domains, results):
+    for qube, res in zip(start_domains, results):
         if isinstance(res, BaseException):
             exit_code = 1
             parser.print_error(
-                "Starting qube failed: {}: {}".format(qube.name, str(res))
+                "Starting qube failed: {}: {}".format(
+                    qube.name, str(res)
+                )
             )
     return exit_code
 
